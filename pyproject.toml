@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colr-interaction"
+version = "0.1.0"
+description = "Conformance checks for axis interaction in OpenType COLR v1 variable fonts"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["opentype", "variable-fonts", "colr", "fonttools", "conformance", "color-fonts"]
+dependencies = ["fonttools>=4.40"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Text Processing :: Fonts",
+]
+
+[project.scripts]
+colr-interaction = "colr_interaction.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colr_interaction"]
