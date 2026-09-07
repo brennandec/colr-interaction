@@ -17,7 +17,9 @@ from fontTools.colorLib.builder import buildCPAL
 from fontTools.varLib.builder import buildVarData, buildVarRegionList, buildVarStore
 
 HERE = Path(__file__).resolve().parent / "fixtures"
-AXES = [("AAAA", 0.0, 0.0, 100.0, "Alpha Axis"), ("BBBB", 0.0, 0.0, 100.0, "Beta Axis")]
+AXES = [("AAAA", 0.0, 0.0, 100.0, "Alpha Axis"),
+        ("BBBB", 0.0, 0.0, 100.0, "Beta Axis"),
+        ("CCCC", -100.0, 0.0, 100.0, "Gamma Axis")]
 GLYPHS = [".notdef", "A"]
 
 
@@ -30,7 +32,7 @@ def _square(pen_box=(100, 0, 500, 700)):
     return pen.glyph()
 
 
-def build(name: str, regions, items):
+def build(name: str, regions, items, region_index=None):
     fb = FontBuilder(1000, isTTF=True)
     fb.setupGlyphOrder(GLYPHS)
     fb.setupCharacterMap({0x41: "A"})
@@ -85,9 +87,10 @@ def build(name: str, regions, items):
     table.ClipList = None
     table.VarIndexMap = None
     tags = [a[0] for a in AXES]
+    ri = region_index if region_index is not None else list(range(len(regions)))
     table.VarStore = buildVarStore(
         buildVarRegionList(regions, tags),
-        [buildVarData(list(range(len(regions))), items, optimize=False)],
+        [buildVarData(ri, items, optimize=False)],
     )
     colr = newTable("COLR")
     colr.table = table
@@ -115,4 +118,35 @@ if __name__ == "__main__":
     build("phantom",
           [{"AAAA": (0.0, 1.0, 1.0)}, {"BBBB": (0.0, 1.0, 1.0)}],
           [[A, 0]])
+
+    # Column order deliberately NOT the region order. A tool that treats delta column i as
+    # Region[i] pairs every delta with the wrong region here and still "passes" quietly.
+    build("shuffled-regions",
+          [{"AAAA": (0.0, 1.0, 1.0)},
+           {"BBBB": (0.0, 1.0, 1.0)},
+           {"AAAA": (0.0, 1.0, 1.0), "BBBB": (0.0, 1.0, 1.0)}],
+          [[J, B, A]],
+          region_index=[2, 1, 0])
+
+    # Intermediate joint region: start < peak < end, peak well short of 1.0. Sampling the
+    # +1 corner gives scalar 0 and reports "no interaction" on a font that has one.
+    build("intermediate-peak",
+          [{"AAAA": (0.0, 1.0, 1.0)},
+           {"BBBB": (0.0, 1.0, 1.0)},
+           {"AAAA": (0.0, 0.5, 0.75), "BBBB": (0.0, 0.5, 0.75)}],
+          [[A, B, J]])
+
+    # Negative peak on a bipolar axis, joint with a positive one.
+    build("negative-peak",
+          [{"AAAA": (0.0, 1.0, 1.0)},
+           {"CCCC": (-1.0, -1.0, 0.0)},
+           {"AAAA": (0.0, 1.0, 1.0), "CCCC": (-1.0, -1.0, 0.0)}],
+          [[A, B, J]])
+
+    # Three-way region: no pair of axes alone explains it.
+    build("three-way",
+          [{"AAAA": (0.0, 1.0, 1.0)},
+           {"BBBB": (0.0, 1.0, 1.0)},
+           {"AAAA": (0.0, 1.0, 1.0), "BBBB": (0.0, 1.0, 1.0), "CCCC": (0.0, 1.0, 1.0)}],
+          [[A, B, J]])
     sys.exit(0)

@@ -63,7 +63,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, asdict
-from itertools import combinations
 from typing import Any, Iterable
 
 from fontTools.ttLib import TTFont
@@ -137,11 +136,31 @@ def interaction_regions(supports: Iterable[dict]) -> list[int]:
     return [i for i, s in enumerate(supports) if len(s) > 1]
 
 
+def _region_map(store, data_index) -> list[int]:
+    """Delta column -> VarRegionList index.
+
+    Column i of a VarData row does NOT address Region[i]. It addresses
+    Region[VarData.VarRegionIndex[i]]. An optimized font stores only the regions a given
+    subtable uses, so treating the column position as the region index silently pairs
+    deltas with the wrong regions. Both fonts this tool was first written against happened
+    to have identity maps, which is exactly why the bug survived to publication.
+    """
+    data = store.VarData[data_index]
+    idx = getattr(data, "VarRegionIndex", None)
+    if idx is None:
+        width = min((len(i) for i in data.Item), default=0)
+        return list(range(width))
+    return list(idx)
+
+
 def _evaluate(store, supports, tags, data_index, row, loc) -> float:
     item = store.VarData[data_index].Item[row]
+    rmap = _region_map(store, data_index)
     total = 0.0
-    for i in range(min(len(item), len(supports))):
-        total += float(item[i]) * supportScalar(loc, supports[i])
+    for col in range(min(len(item), len(rmap))):
+        region = rmap[col]
+        if region < len(supports):
+            total += float(item[col]) * supportScalar(loc, supports[region])
     return total
 
 
@@ -174,36 +193,42 @@ def check_font(path: str, check_base: bool = False) -> Report:
     # C1 -- interaction identity, per joint region, per axis pair, per row.
     bad_c1: list[str] = []
     saw_interaction = False
-    # Distinct axis pairs to test, not distinct regions: one pair may be covered by several
-    # regions (a piecewise-split axis is stored as adjacent regions over the same pair).
-    pairs = sorted({
-        (a, b)
-        for ri in joint
-        for a, b in combinations(sorted(supports[ri]), 2)
-    })
-    for di, data in enumerate(store.VarData):
+    # Evaluate each joint region at ITS OWN peak vector, never at a hardcoded 1.0.
+    # A region may peak negative (slnt), may be intermediate (start < peak < end < 1), and
+    # may span three or more axes. Sampling the +1 corner returns a zero scalar for all
+    # three cases and would report "no interaction" on fonts that plainly have one.
+    for di in range(len(store.VarData)):
+        data = store.VarData[di]
+        rmap = _region_map(store, di)
+        joint_cols = [(c, r) for c, r in enumerate(rmap) if r < len(supports) and len(supports[r]) > 1]
         for row in range(len(data.Item)):
             item = data.Item[row]
-            for a, b in pairs:
-                corner = _loc(tags, **{a: 1.0, b: 1.0})
-                I = (
-                    _evaluate(store, supports, tags, di, row, corner)
-                    - _evaluate(store, supports, tags, di, row, _loc(tags, **{a: 1.0}))
-                    - _evaluate(store, supports, tags, di, row, _loc(tags, **{b: 1.0}))
-                    + _evaluate(store, supports, tags, di, row, _loc(tags))
-                )
-                # Expected: the contribution at the corner of every joint region supported
-                # on exactly these axes -- SCALAR-WEIGHTED, not a raw sum. A region peaked
-                # short of 1.0 contributes nothing at the corner even though its support
-                # names the same pair, which is how piecewise-split axes are stored.
+            for col, ri in joint_cols:
+                if col >= len(item):
+                    continue
+                axes = sorted(supports[ri])
+                peak = {a: supports[ri][a][1] for a in axes}
+                # Mixed difference over the region's own axis set: alternate the sign with
+                # the number of axes held at zero. For two axes this is the familiar
+                # I = v(a,b) - v(a,0) - v(0,b) + v(0,0); for n axes it is the n-th order
+                # mixed difference, which is what isolates a genuinely n-way term.
+                I = 0.0
+                for mask in range(1 << len(axes)):
+                    coords = {a: (peak[a] if (mask >> k) & 1 else 0.0)
+                              for k, a in enumerate(axes)}
+                    held_at_zero = len(axes) - bin(mask).count("1")
+                    I += ((-1) ** held_at_zero) * _evaluate(
+                        store, supports, tags, di, row, _loc(tags, **coords)
+                    )
                 expected = sum(
-                    float(item[k]) * supportScalar(corner, supports[k])
-                    for k in joint
-                    if set(supports[k]) == {a, b} and k < len(item)
+                    float(item[c2]) * supportScalar(_loc(tags, **peak), supports[r2])
+                    for c2, r2 in enumerate(rmap)
+                    if c2 < len(item) and r2 < len(supports) and set(supports[r2]) == set(axes)
                 )
                 if abs(I - expected) > TOL:
                     bad_c1.append(
-                        f"VarData[{di}] row {row} {a}x{b}: I(1,1)={I:g} expected {expected:g}"
+                        f"VarData[{di}] row {row} {'x'.join(axes)} at peak "
+                        f"{tuple(peak[a] for a in axes)}: I={I:g} expected {expected:g}"
                     )
                 if abs(I) > TOL:
                     saw_interaction = True
@@ -225,22 +250,25 @@ def check_font(path: str, check_base: bool = False) -> Report:
     for di, data in enumerate(store.VarData):
         for row in range(len(data.Item)):
             item = data.Item[row]
-            for ri in joint:
-                if ri >= len(item) or float(item[ri]) == 0:
+            rmap = _region_map(store, di)
+            joint_cols = [(c, r) for c, r in enumerate(rmap)
+                          if r < len(supports) and len(supports[r]) > 1]
+            for col, ri in joint_cols:
+                if col >= len(item) or float(item[col]) == 0:
                     continue
-                for axis in supports[ri]:
-                    for coord in (0.5, 1.0):
-                        loc = _loc(tags, **{axis: coord})
+                for axis, (_, pk, _e) in supports[ri].items():
+                    for frac in (0.5, 1.0):
+                        loc = _loc(tags, **{axis: pk * frac})
                         full = _evaluate(store, supports, tags, di, row, loc)
                         without = sum(
-                            float(item[k]) * supportScalar(loc, supports[k])
-                            for k in range(min(len(item), len(supports)))
-                            if k not in joint
+                            float(item[c2]) * supportScalar(loc, supports[r2])
+                            for c2, r2 in enumerate(rmap)
+                            if c2 < len(item) and r2 < len(supports) and len(supports[r2]) <= 1
                         )
                         if abs(full - without) > TOL:
                             bad_c2.append(
-                                f"VarData[{di}] row {row}: region {ri} leaks into "
-                                f"{axis}={coord} marginal"
+                                f"VarData[{di}] row {row}: region {ri} leaks into the "
+                                f"{axis}={pk * frac:g} marginal"
                             )
     report.findings.append(
         Finding(
@@ -270,11 +298,13 @@ def check_font(path: str, check_base: bool = False) -> Report:
     for di, data in enumerate(store.VarData):
         if all(all(x == 0 for x in item) for item in data.Item):
             bad_c4.append(f"VarData[{di}]: every delta row is zero")
+        rmap = _region_map(store, di)
         width = min((len(i) for i in data.Item), default=0)
-        for k in range(min(width, len(supports))):
-            if all(item[k] == 0 for item in data.Item):
-                axes = "x".join(sorted(supports[k])) or "(no peak)"
-                bad_c4.append(f"region {k} ({axes}) declared but no row uses it")
+        for col in range(min(width, len(rmap))):
+            region = rmap[col]
+            if region < len(supports) and all(item[col] == 0 for item in data.Item):
+                axes = "x".join(sorted(supports[region])) or "(no peak)"
+                bad_c4.append(f"region {region} ({axes}) declared but no row uses it")
     report.findings.append(
         Finding(
             "C4 no-phantom-axis",

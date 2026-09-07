@@ -57,3 +57,53 @@ def test_verdict_is_derived_not_stored():
 def test_non_colr_font_is_not_an_error():
     r = check_font(str(FIX / "separable.ttf"))
     assert r.findings
+
+
+# --- regressions for the four cases that were silently wrong before v0.2.0 ---------
+#
+# Each of these passed the first published version by returning the wrong answer quietly.
+# They are the reason this tool now evaluates each region at its own peak vector and
+# resolves delta columns through VarData.VarRegionIndex.
+
+def test_shuffled_region_index_is_resolved():
+    """Delta column i addresses Region[VarRegionIndex[i]], not Region[i].
+
+    This fixture stores its columns in reverse region order. A tool that assumes identity
+    pairs every delta with the wrong region and still reports a clean result.
+    """
+    r = check_font(str(FIX / "shuffled-regions.ttf"))
+    assert r.ok, [str(f) for f in r.findings if not f.ok]
+    assert not r.separable
+    assert r.interaction_axis_pairs == [["AAAA", "BBBB"]]
+
+
+def test_intermediate_peak_region_is_found():
+    """A joint region peaking at 0.5 has scalar 0 at the +1 corner.
+
+    Sampling a hardcoded corner reports "additively separable" on a font that carries an
+    interaction. The region must be evaluated at its own peak.
+    """
+    r = check_font(str(FIX / "intermediate-peak.ttf"))
+    assert r.ok
+    assert not r.separable, "interaction at an intermediate peak was missed"
+
+
+def test_negative_peak_region_is_found():
+    """Bipolar axes peak negative. Evaluating at +1 returns zero scalar."""
+    r = check_font(str(FIX / "negative-peak.ttf"))
+    assert r.ok
+    assert not r.separable
+    assert r.interaction_axis_pairs == [["AAAA", "CCCC"]]
+
+
+def test_three_way_region_is_reported_as_three_way():
+    """A 3-axis region is not two pairwise interactions.
+
+    Held at (a=1, b=1, c=0) its scalar is zero, so pairwise sampling finds nothing. The
+    n-th order mixed difference over the region's own axis set is what isolates it.
+    """
+    r = check_font(str(FIX / "three-way.ttf"))
+    assert r.ok
+    assert not r.separable
+    assert r.interaction_axis_pairs == [["AAAA", "BBBB", "CCCC"]]
+    assert "AAAAxBBBBxCCCC" in r.verdict

@@ -82,7 +82,7 @@ and one font whose entire variation store was zeros. The check is cheap and it f
 
 | | | |
 |---|---|---|
-| `C1` | interaction-identity | For every joint-support region, `I(1,1)` evaluated from the store must equal that region's contribution at the corner, exactly. Scalar-weighted, so piecewise-split axes stored as adjacent regions are handled correctly. |
+| `C1` | interaction-identity | For every joint-support region, the mixed difference evaluated from the store must equal that region's own contribution, exactly. Evaluated **at each region's own peak vector** — not a hardcoded corner — so intermediate regions, negative peaks and 3+ axis regions are all handled. For an *n*-axis region it is the *n*-th order mixed difference, which is what isolates a genuinely *n*-way term from the pairwise ones. |
 | `C2` | marginal-blindness | A joint delta must contribute nothing to any single-axis evaluation — absent from the marginals, not merely small in them. |
 | `C3` | zero-corner | At the designspace default every region scalar is zero, so every variable attribute must resolve to its static value. |
 | `C4` | no-phantom-axis | Fails a region no delta row uses, and a `VarData` whose every row is zero. |
@@ -141,11 +141,33 @@ not a property of a font. Anything asserting otherwise is overclaiming.
 It also is not a general font validator. It answers one question that existing validators do
 not ask.
 
+## Correctness notes
+
+Three classes of bug were found in this tool's own first published version, all by people
+and fonts outside the house that wrote it. They are listed here because the fixtures that
+now cover them are the most useful part of the repo:
+
+- **Delta column ≠ region index.** Column *i* of a `VarData` row addresses
+  `Region[VarData.VarRegionIndex[i]]`, not `Region[i]`. An optimized font stores only the
+  regions a subtable uses. Both fonts this was first written against happened to have
+  identity maps, which is exactly why it survived to publication.
+  Fixture: `shuffled-regions.ttf`.
+- **Sampling a hardcoded corner.** A joint region peaking at 0.5, or peaking negative on a
+  bipolar axis, has scalar zero at +1 — so a corner sample reports "separable" on a font
+  that plainly interacts. Every region is now evaluated at its own peak vector.
+  Fixtures: `intermediate-peak.ttf`, `negative-peak.ttf`.
+- **Pairwise sampling misses n-way regions.** A three-axis region held at *(1, 1, 0)* has
+  scalar zero. Fixture: `three-way.ttf`.
+
+An earlier one, kept because the lesson generalises: an unweighted sum of regions matching
+an axis pair gives the wrong expected value for an axis whose range is split across
+adjacent regions. Each region's contribution must be scalar-weighted.
+
 ## Contributing
 
-Bug reports with a font that reproduces are the most useful thing. If a check is wrong we
-want to know — `C1` had a real bug found by a real font whose `opsz` range is split across
-two regions, where an unweighted sum of matching regions gave the wrong expected value.
+Bug reports with a font that reproduces are the most useful thing, and the four fixtures
+above all came from someone saying "what about…". If a check is wrong, that is worth more
+to this repo than a feature.
 
 ## License
 
