@@ -55,6 +55,18 @@ reports which one you did.
 Multi-axis regions have been legal since variable fonts shipped, and compilers emit them
 routinely — an `opsz × wght` region is ordinary. What is not routine is checking them.
 
+How thin the checking is, measured rather than asserted: at the time of writing, a code
+search of [fontbakery](https://github.com/googlefonts/fontbakery) — the QA suite most font
+projects run, and the one every Google Fonts submission passes through — returns **zero**
+occurrences of `VarRegionList` and **zero** of `PeakCoord`. It does not inspect the
+variation region model at all. fontTools implements the model (53 occurrences of
+`PeakCoord`) but implementing a model is not checking conformance to it.
+
+That is evidence, not proof: GitHub code search is not exhaustive and I have not audited
+every private toolchain in the industry. **If you know of a tool that already does this,
+open an issue and I will link it here.** The claim is meant to be falsifiable, and it would
+be more useful to me to be wrong early than to be wrong in public for a year.
+
 - A font can declare an axis whose every delta row is zero. Every design application will
   still enumerate `fvar` and draw the user a slider for a dimension that moves nothing.
   That is not an internal inconsistency; it is **a defect with a user interface**. `C4`
