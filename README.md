@@ -1,6 +1,10 @@
 # colr-interaction
 
-Conformance checks for **axis interaction** in OpenType COLR v1 variable fonts.
+Conformance checks for **axis interaction** in OpenType variable fonts.
+
+Reads **every** `ItemVariationStore` in a font — `COLR`, `HVAR`, `VVAR`, `MVAR`, `GDEF` —
+because a joint region in `HVAR` changes advance widths, and a tool that reads only `COLR`
+would call that font free of interaction.
 
 A variation region may peak on more than one axis. A delta stored against such a region
 contributes only when all of those axes are engaged together — so it is absent from every
@@ -82,14 +86,49 @@ and one font whose entire variation store was zeros. The check is cheap and it f
 
 | | | |
 |---|---|---|
-| `C1` | interaction-identity | For every joint-support region, the mixed difference evaluated from the store must equal that region's own contribution, exactly. Evaluated **at each region's own peak vector** — not a hardcoded corner — so intermediate regions, negative peaks and 3+ axis regions are all handled. For an *n*-axis region it is the *n*-th order mixed difference, which is what isolates a genuinely *n*-way term from the pairwise ones. |
-| `C2` | marginal-blindness | A joint delta must contribute nothing to any single-axis evaluation — absent from the marginals, not merely small in them. |
-| `C3` | zero-corner | At the designspace default every region scalar is zero, so every variable attribute must resolve to its static value. |
-| `C4` | no-phantom-axis | Fails a region no delta row uses, and a `VarData` whose every row is zero. |
-| `C5` | base-immutability | Opt-in (`--check-base`). The topmost layer of each glyph's `PaintColrLayers` must contain no variable paint. Where a font puts an interaction on *translation*, this is what keeps the read shape from moving under any axis combination. |
+| `C1` | interaction-identity | For every joint-support region, the mixed difference evaluated from the store equals that region's own contribution, exactly. Evaluated **at each region's own peak vector** — never a fixed corner — so intermediate regions, negative peaks and 3+ axis regions are covered. For an *n*-axis region it is the *n*-th order mixed difference. |
+| `C2` | marginal-blindness | A joint delta contributes nothing to any single-axis evaluation — absent from the marginals, not merely small in them. |
+| `C3` | zero-corner | At the designspace default every region scalar is zero, so every variable value must resolve to its static value. |
+| `C4` | no-phantom-axis | An `fvar` axis that moves **nothing, anywhere** in the font — `gvar` included. That is the defect a user sees: every design application enumerates `fvar` and draws a slider for it. |
+| `C5` | reachable-deltas | Every `VarIndexBase` in a COLR paint resolves to a real delta set, through `DeltaSetIndexMap` when present. |
+| `C6` | base-immutability | Opt-in (`--check-base`). The topmost layer of each glyph's `PaintColrLayers` carries no variable paint. Where a font puts an interaction on *translation*, this is what keeps the read shape from moving. |
 
-`C1`–`C4` run on any COLR v1 font with a variation store. `C5` assumes the common
-"decorative layers under a static base" construction and is off by default.
+Findings that are not defects are reported separately as **observations** — an unused
+region in one store, an all-zero `VarData` in a fixed-pitch font's `HVAR`, a pinned axis.
+A tool that reports every oddity as a failure trains people to ignore it.
+
+## Tested against fonts it did not build
+
+The 24 variable fonts shipped with macOS — SF Pro, SF Compact, SF Mono, New York and the
+script faces — are the acceptance corpus:
+
+```
+24 fonts · 10 carry an axis interaction · 0 failures
+
+interacting axis sets found in the wild:
+  opsz x wght          10 fonts
+  GRAD x opsz           1
+  opsz x wdth           1
+  opsz x wdth x wght    1     <- a genuine three-way region
+  wdth x wght           1
+```
+
+**Zero false positives on professionally built fonts is the bar**, and reaching it took
+three rounds. Each round is a check that used to be wrong:
+
+- *"an all-zero `VarData` is a defect"* — flagged SF Mono, SF Mono Italic and SF Camera.
+  It is correct: a fixed-pitch font's advances do not vary with weight.
+- *"a region no subtable uses is a defect"* — flagged New York and New York Italic. Also
+  correct: an unused `GRAD` region in `HVAR` is expected, because a grade axis is defined
+  not to change advance widths.
+- *"an axis with no deltas is a phantom"* — flagged SF Compact Italic, whose `opsz` is
+  `19/19/19`. A **pinned** axis has no range to move along; declaring one is deliberate and
+  standard.
+
+All three now report as observations, and `C4` fails only on the case it names.
+
+`C1`–`C4` run on any variable font with a variation store. `C5` needs `COLR`. `C6` assumes
+the common "decorative layers under a static base" construction and is off by default.
 
 ## Install
 
@@ -105,7 +144,9 @@ Requires `fonttools >= 4.40`.
 ```
 python -m colr_interaction FONT [FONT ...]
     --json                  machine-readable report
-    --check-base            also run C5
+    --explain               list every interaction term with its magnitude, largest first
+    --top N                 with --explain, how many to list (default 20)
+    --check-base            also run C6
     --require-interaction   exit non-zero if the font is additively separable
 ```
 
@@ -115,6 +156,19 @@ font) · `2` a font could not be read.
 `--require-interaction` is for CI on a build that claims a designed interaction. Without
 it the tool still verifies the identity and reports which case the binary is, rather than
 failing a font that never claimed anything.
+
+`--explain` turns the verdict into an instrument. It reports how far the marginals are
+from the real joint value, largest miss first:
+
+```
+COLR  VarData[0] row 5  DEPTxTIME  at DEPT=1, TIME=1
+      marginals predict 13599.00   actual 15074.00   miss +1475.00   +10.8%
+HVAR  VarData[9] row 0  opszxwght  at opsz=1, wght=-1
+      marginals predict -1200.00   actual     0.00   miss +1200.00  +100.0%
+```
+
+The second row is the interesting shape: move each axis alone and you would predict −1200;
+the real joint value is zero, because the interaction cancels the marginals exactly.
 
 As a library:
 

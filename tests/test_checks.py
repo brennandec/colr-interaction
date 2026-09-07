@@ -7,7 +7,7 @@ FIX = Path(__file__).parent / "fixtures"
 
 
 def _ensure():
-    if not (FIX / "separable.ttf").exists():
+    if not (FIX / "phantom-axis.ttf").exists():
         subprocess.run([sys.executable, str(Path(__file__).parent / "make_fixtures.py")], check=True)
 
 
@@ -20,7 +20,7 @@ def test_separable_has_no_interaction():
     r = check_font(str(FIX / "separable.ttf"))
     assert r.ok
     assert r.separable
-    assert r.interaction_axis_pairs == []
+    assert r.interaction_axis_sets == []
     assert "separable" in r.verdict
 
 
@@ -28,19 +28,37 @@ def test_interacting_reports_the_pair():
     r = check_font(str(FIX / "interacting.ttf"))
     assert r.ok
     assert not r.separable
-    assert r.interaction_axis_pairs == [["AAAA", "BBBB"]]
+    assert r.interaction_axis_sets == [["AAAA", "BBBB"]]
     assert "AAAAxBBBB" in r.verdict
 
 
-def test_phantom_region_fails_c4():
-    r = check_font(str(FIX / "phantom.ttf"))
+def test_unused_region_is_an_observation_not_a_failure():
+    """A region no subtable uses is dead bytes, not a broken font.
+
+    Reporting it as a failure flagged New York and SF Mono, where an unused GRAD region in
+    HVAR is correct: a grade axis is defined not to change advance widths.
+    """
+    r = check_font(str(FIX / "unused-region.ttf"))
+    assert r.ok, [str(f) for f in r.findings if not f.ok]
+    assert any("declared but unused" in o for o in r.observations)
+
+
+def test_phantom_axis_fails_c4():
+    """An fvar axis that moves nothing anywhere is the defect worth failing.
+
+    Every design application enumerates fvar and hands the user a slider for it.
+    """
+    r = check_font(str(FIX / "phantom-axis.ttf"))
     assert not r.ok
     failed = [f.check for f in r.findings if not f.ok]
     assert failed == ["C4 no-phantom-axis"]
+    detail = next(f.detail for f in r.findings if f.check.startswith("C4"))
+    assert "CCCC" in detail
 
 
 def test_identity_holds_on_every_fixture():
-    for name in ("separable", "interacting", "phantom"):
+    for name in ("separable", "interacting", "unused-region", "phantom-axis",
+                 "shuffled-regions", "intermediate-peak", "negative-peak", "three-way"):
         r = check_font(str(FIX / f"{name}.ttf"))
         c1 = next(f for f in r.findings if f.check.startswith("C1"))
         assert c1.ok, f"{name}: {c1.detail}"
@@ -49,7 +67,7 @@ def test_identity_holds_on_every_fixture():
 def test_verdict_is_derived_not_stored():
     r = check_font(str(FIX / "interacting.ttf"))
     assert r.verdict == "carries a designed axis interaction on: AAAAxBBBB"
-    r.interaction_axis_pairs = []
+    r.interaction_axis_sets = []
     r.separable = True
     assert "separable" in r.verdict
 
@@ -74,7 +92,7 @@ def test_shuffled_region_index_is_resolved():
     r = check_font(str(FIX / "shuffled-regions.ttf"))
     assert r.ok, [str(f) for f in r.findings if not f.ok]
     assert not r.separable
-    assert r.interaction_axis_pairs == [["AAAA", "BBBB"]]
+    assert r.interaction_axis_sets == [["AAAA", "BBBB"]]
 
 
 def test_intermediate_peak_region_is_found():
@@ -93,7 +111,7 @@ def test_negative_peak_region_is_found():
     r = check_font(str(FIX / "negative-peak.ttf"))
     assert r.ok
     assert not r.separable
-    assert r.interaction_axis_pairs == [["AAAA", "CCCC"]]
+    assert r.interaction_axis_sets == [["AAAA", "CCCC"]]
 
 
 def test_three_way_region_is_reported_as_three_way():
@@ -105,5 +123,41 @@ def test_three_way_region_is_reported_as_three_way():
     r = check_font(str(FIX / "three-way.ttf"))
     assert r.ok
     assert not r.separable
-    assert r.interaction_axis_pairs == [["AAAA", "BBBB", "CCCC"]]
+    assert r.interaction_axis_sets == [["AAAA", "BBBB", "CCCC"]]
     assert "AAAAxBBBBxCCCC" in r.verdict
+
+
+def test_every_variation_store_is_scanned_not_only_colr():
+    """A joint region in HVAR changes advance widths.
+
+    A tool that reads only COLR reports such a font as free of interaction. The fixtures
+    are COLR-only, so this asserts the mechanism rather than the outcome: whatever stores
+    a font has, all of them are listed and all of them are checked.
+    """
+    from colr_interaction import var_stores
+    from fontTools.ttLib import TTFont
+
+    r = check_font(str(FIX / "interacting.ttf"))
+    assert r.stores, "no stores reported"
+    found = {s.table for s in var_stores(TTFont(str(FIX / "interacting.ttf")))}
+    assert set(r.stores) == found
+    for f in r.findings:
+        if f.check.startswith(("C1", "C2", "C3", "C4")):
+            assert f.table == "+".join(r.stores)
+
+
+def test_var_idx_resolution_handles_outer_inner_split():
+    """A VarIdx is an outer/inner pair, not a row number."""
+    from colr_interaction.store import resolve_var_idx, var_stores
+    from fontTools.ttLib import TTFont
+
+    st = var_stores(TTFont(str(FIX / "interacting.ttf")))[0]
+    assert resolve_var_idx(st.store, 0) == (0, 0)
+    assert resolve_var_idx(st.store, 0xFFFF0000) is None   # outer past the end
+    assert resolve_var_idx(st.store, 0x0000FFFF) is None   # inner past the end
+
+
+def test_c5_reports_reachable_deltas():
+    r = check_font(str(FIX / "interacting.ttf"))
+    c5 = next((f for f in r.findings if f.check.startswith("C5")), None)
+    assert c5 is not None and c5.ok, "C5 should pass on a well-formed fixture"

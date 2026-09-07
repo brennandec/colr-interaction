@@ -32,7 +32,7 @@ def _square(pen_box=(100, 0, 500, 700)):
     return pen.glyph()
 
 
-def build(name: str, regions, items, region_index=None):
+def build(name: str, regions, items, region_index=None, axes=None):
     fb = FontBuilder(1000, isTTF=True)
     fb.setupGlyphOrder(GLYPHS)
     fb.setupCharacterMap({0x41: "A"})
@@ -42,7 +42,8 @@ def build(name: str, regions, items, region_index=None):
     fb.setupNameTable({"familyName": f"ColrInteraction {name}", "styleName": "Regular"})
     fb.setupOS2()
     fb.setupPost()
-    fb.setupFvar([(t, lo, d, hi, n) for t, lo, d, hi, n in AXES], [])
+    use = axes if axes is not None else AXES
+    fb.setupFvar([(t, lo, d, hi, n) for t, lo, d, hi, n in use], [])
 
     font = fb.font
     font["CPAL"] = buildCPAL([[(0, 0, 0, 1.0), (1, 1, 1, 1.0)]])
@@ -86,7 +87,7 @@ def build(name: str, regions, items, region_index=None):
     table.LayerList.LayerCount = 2
     table.ClipList = None
     table.VarIndexMap = None
-    tags = [a[0] for a in AXES]
+    tags = [a[0] for a in use]
     ri = region_index if region_index is not None else list(range(len(regions)))
     table.VarStore = buildVarStore(
         buildVarRegionList(regions, tags),
@@ -107,46 +108,64 @@ B = floatToFixed(0.20, 14)
 J = floatToFixed(0.05, 14)
 
 if __name__ == "__main__":
+    AB = AXES[:2]          # AAAA, BBBB
+    AC = [AXES[0], AXES[2]]  # AAAA, CCCC (bipolar)
+    ABC = AXES
+
     print("building fixtures:")
+
+    # Two single-axis regions. I is identically zero.
     build("separable",
           [{"AAAA": (0.0, 1.0, 1.0)}, {"BBBB": (0.0, 1.0, 1.0)}],
-          [[A, B]])
+          [[A, B]], axes=AB)
+
+    # Adds a joint region with a delta. I equals that delta.
     build("interacting",
           [{"AAAA": (0.0, 1.0, 1.0)}, {"BBBB": (0.0, 1.0, 1.0)},
            {"AAAA": (0.0, 1.0, 1.0), "BBBB": (0.0, 1.0, 1.0)}],
-          [[A, B, J]])
-    build("phantom",
-          [{"AAAA": (0.0, 1.0, 1.0)}, {"BBBB": (0.0, 1.0, 1.0)}],
-          [[A, 0]])
+          [[A, B, J]], axes=AB)
 
-    # Column order deliberately NOT the region order. A tool that treats delta column i as
-    # Region[i] pairs every delta with the wrong region here and still "passes" quietly.
+    # A region no delta uses, while its axis still moves via ANOTHER region. Dead bytes,
+    # not a broken font -- this is the New York / SF Mono shape, where an unused GRAD
+    # region in HVAR is correct because a grade axis does not change advance widths.
+    build("unused-region",
+          [{"AAAA": (0.0, 1.0, 1.0)},
+           {"BBBB": (0.0, 1.0, 1.0)},
+           {"BBBB": (0.0, 0.5, 0.75)}],
+          [[A, B, 0]], axes=AB)
+
+    # An fvar axis nothing moves under, anywhere. The slider that does nothing.
+    build("phantom-axis",
+          [{"AAAA": (0.0, 1.0, 1.0)}, {"BBBB": (0.0, 1.0, 1.0)}],
+          [[A, B]], axes=ABC)
+
+    # Column order deliberately NOT region order. A tool assuming identity pairs every
+    # delta with the wrong region and still reports a clean result.
     build("shuffled-regions",
           [{"AAAA": (0.0, 1.0, 1.0)},
            {"BBBB": (0.0, 1.0, 1.0)},
            {"AAAA": (0.0, 1.0, 1.0), "BBBB": (0.0, 1.0, 1.0)}],
-          [[J, B, A]],
-          region_index=[2, 1, 0])
+          [[J, B, A]], region_index=[2, 1, 0], axes=AB)
 
-    # Intermediate joint region: start < peak < end, peak well short of 1.0. Sampling the
-    # +1 corner gives scalar 0 and reports "no interaction" on a font that has one.
+    # Joint region peaking at 0.5: scalar 0 at the +1 corner.
     build("intermediate-peak",
           [{"AAAA": (0.0, 1.0, 1.0)},
            {"BBBB": (0.0, 1.0, 1.0)},
            {"AAAA": (0.0, 0.5, 0.75), "BBBB": (0.0, 0.5, 0.75)}],
-          [[A, B, J]])
+          [[A, B, J]], axes=AB)
 
     # Negative peak on a bipolar axis, joint with a positive one.
     build("negative-peak",
           [{"AAAA": (0.0, 1.0, 1.0)},
            {"CCCC": (-1.0, -1.0, 0.0)},
            {"AAAA": (0.0, 1.0, 1.0), "CCCC": (-1.0, -1.0, 0.0)}],
-          [[A, B, J]])
+          [[A, B, J]], axes=AC)
 
     # Three-way region: no pair of axes alone explains it.
     build("three-way",
           [{"AAAA": (0.0, 1.0, 1.0)},
            {"BBBB": (0.0, 1.0, 1.0)},
            {"AAAA": (0.0, 1.0, 1.0), "BBBB": (0.0, 1.0, 1.0), "CCCC": (0.0, 1.0, 1.0)}],
-          [[A, B, J]])
+          [[A, B, J]], axes=ABC)
+
     sys.exit(0)
